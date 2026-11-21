@@ -1,0 +1,8 @@
+python programming introduction 
+
+key features:
+easy to read,
+interpreted language,
+multi-paradigm,
+cross-platform,
+rich-ecosystem

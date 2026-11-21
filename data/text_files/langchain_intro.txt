@@ -1,0 +1,9 @@
+LangChain is an open-source framework and agent engineering platform (MIT-licensed) for building applications and agents powered by Large Language Models (LLMs). Available in Python and JavaScript/TypeScript, it connects models to external data sources, tools, memory, and workflows while avoiding vendor lock-in.
+
+
+Core Capabilities
+
+• Model & Tool Interoperability: Provides a unified interface across LLM providers, vector stores, APIs, and tools so you can swap components with minimal code changes.
+• Agents (create_agent): Lets models reason, plan, call tools, and execute multi-step tasks using patterns like ReAct on a durable runtime.
+• Middleware & Persistence: Supports composable hooks (such as human-in-the-loop approval, context compression, and sensitive data filtering) alongside checkpointing and state persistence.
+• Data & RAG Workflows: Combines document loaders, text splitters, embeddings, and vector databases to ground responses in external knowledge.

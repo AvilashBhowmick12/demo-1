@@ -3,9 +3,10 @@ from src.embedding import EmbeddingPipeline
 
 
 ## example
+
 if __name__ == "__main__":
-    docs=load_all_documents("data")
-    chunks=EmbeddingPipeline().chunk_documents(docs)
-    chunkvectors=EmbeddingPipeline().embed_chunks(chunks)
-    print(docs)
-    print(chunkvectors)
+    docs = load_all_documents("data")
+    pipeline = EmbeddingPipeline()
+    chunks = pipeline.chunk_documents(docs)
+    chunkvectors = pipeline.embed_chunks(chunks)
+    print(len(docs), chunkvectors.shape)

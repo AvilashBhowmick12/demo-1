@@ -1,5 +1,5 @@
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv 
 from src.vectorstore import FaissVectorStore
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -40,7 +40,7 @@ class RAGSearch:
         ):
             print("[INFO] Building new FAISS vector store...")
 
-            from data_loader import load_all_documents
+            from src.data_loader import load_all_documents
 
             docs = load_all_documents("data")
 

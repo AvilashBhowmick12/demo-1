@@ -7,6 +7,7 @@ text layer. For every page we first try the normal text layer; if a page has
 OCR results are cached on disk (one small JSON per PDF), so each scanned resume
 is only OCR'd once.
 """
+import gc
 import hashlib
 import json
 from pathlib import Path
@@ -30,6 +31,13 @@ def _get_engine():
         from rapidocr import RapidOCR
         _engine = RapidOCR()
     return _engine
+
+
+def _reset_engine() -> None:
+    """Drop the OCR engine so its memory is released; it is re-created on next use."""
+    global _engine
+    _engine = None
+    gc.collect()
 
 
 def file_hash(path: Path) -> str:
@@ -102,13 +110,17 @@ def load_pdf(
                 if key in cache:
                     text = cache[key]
                 else:
-                    try:
-                        text = _ocr_page(page)
-                        cache[key] = text
-                        cache_changed = True
-                    except Exception as e:  # e.g. rapidocr not installed
-                        print(f"[ERROR] OCR failed for {pdf_path.name} page {i}: {e}")
-                        text = ""
+                    text = ""
+                    for attempt in (1, 2):   # a memory error is often temporary: reset and retry once
+                        try:
+                            text = _ocr_page(page)
+                            cache[key] = text
+                            cache_changed = True
+                            break
+                        except Exception as e:  # e.g. out of memory, rapidocr not installed
+                            short = str(e).strip().splitlines()[-1] if str(e).strip() else repr(e)
+                            print(f"[ERROR] OCR failed for {pdf_path.name} page {i} (attempt {attempt}): {short}")
+                            _reset_engine()
             if not text.strip():
                 continue
             docs.append(Document(

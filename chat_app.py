@@ -10,8 +10,12 @@ HELP = """Describe the role and skills you want, then keep refining. Examples:
   compare the top two
 Commands: /reset (start over), /help, exit"""
 
+# Multilingual model: resumes in French, Russian etc. are matched properly (all-MiniLM-L6-v2 is English-only).
+# Changing this value makes the index rebuild automatically on the next start (a few minutes).
+EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+
 if __name__ == "__main__":
-    shortlister = ResumeShortlister()
+    shortlister = ResumeShortlister(embedding_model=EMBEDDING_MODEL)
     shortlister.ensure("data")   # loads the saved index, or builds it on the first run
     chat = ChatShortlister(shortlister)
 

@@ -9,6 +9,7 @@ class EmbeddingPipeline:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.model = SentenceTransformer(model_name) 
+        self.model.max_seq_length = 256   # some multilingual models default to 128, which cuts 1000-char chunks
         print(f"[INFO] Loaded embedding model: {model_name}")
 
     def chunk_documents(self, documents: List[Any]) -> List[Any]: 

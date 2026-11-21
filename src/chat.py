@@ -177,12 +177,14 @@ class ChatShortlister:
         self.llm = llm
         self.spec = SearchSpec()
         self.results: List[dict] = []
+        self.all_results: List[dict] = []
         self.history: List[tuple] = []   # (role, text)
 
     # ---------- public ----------
     def reset(self) -> None:
         self.spec = SearchSpec()
         self.results = []
+        self.all_results = []
         self.history = []
 
     def handle(self, message: str) -> str:
@@ -226,28 +228,43 @@ class ChatShortlister:
         if spec.is_empty():
             return "What role and skills are you looking for? For example: 'DevOps engineer with AWS and Terraform'."
         self.spec = spec
-        self.results = self.shortlister.shortlist(
+        everyone = self.shortlister.shortlist(
             query=spec.query,
             must_have=spec.must_have,
             nice_to_have=spec.nice_to_have,
-            top_n=spec.top_n,
+            top_n=max(len(self.shortlister.candidates), 1),
             strict=spec.strict,
             min_years=spec.min_years,
             max_years=spec.max_years,
         )
+        self.all_results = everyone
+        self.results = everyone[:spec.top_n]
         return self.format_results()
+
+    def _summary_line(self) -> str:
+        total = len(self.all_results)
+        if self.spec.must_have:
+            full = sum(1 for r in self.all_results if not r["missing_must"])
+            return (f"{total} candidates match at least one skill: {full} meet all "
+                    f"{len(self.spec.must_have)} must-haves, {total - full} meet only some.")
+        return f"{total} candidates match at least one of the skills."
+
+    @staticmethod
+    def _short(name: str, width: int = 34) -> str:
+        return name if len(name) <= width else name[:width - 3] + "..."
 
     def format_results(self) -> str:
         lines = [f"Criteria: {self.spec.describe()}"]
         if not self.results:
             hint = " Try removing 'strict' or a must-have skill." if self.spec.strict else ""
             return "\n".join(lines + ["No matching candidates." + hint])
+        lines.append(self._summary_line())
         lines.append(f"Top {len(self.results)} candidates:")
         for rank, r in enumerate(self.results, 1):
             has = ", ".join(f"{t.split('|')[0]}({r['mentions'].get(t, 0)})"
                             for t in r["matched_must"] + r["matched_nice"]) or "-"
             missing = ", ".join(t.split("|")[0] for t in r["missing_must"]) or "-"
-            lines.append(f"{rank:>2}. {r['source_file']:<34} score {r['score']:>5}  "
+            lines.append(f"{rank:>2}. {self._short(r['source_file']):<34} score {r['score']:>5}  "
                          f"(keywords {r['keyword_score']} | semantic {r['semantic_score']})")
             exp = "exp unknown" if r.get("years") is None else f"exp ~{r['years']:g} yrs ({r['years_source']})"
             lines.append(f"      has: {has}   missing must-haves: {missing}   {exp}")

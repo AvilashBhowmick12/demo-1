@@ -31,7 +31,8 @@ SYNONYMS = [
     ["scikit-learn", "sklearn", "scikit learn"],
     ["node.js", "nodejs", "node js"],
     ["power bi", "powerbi"],
-    ["machine learning", "ml"],
+    ["machine learning", "ml", "apprentissage automatique"],
+    ["ai", "artificial intelligence", "intelligence artificielle", "ia"],
     ["llm", "large language model"],
     ["rag", "retrieval augmented generation", "retrieval-augmented generation"],
     ["nlp", "natural language processing"],
@@ -109,6 +110,17 @@ class ResumeShortlister:
     def _candidates_file(self) -> Path:
         return self.persist_dir / "candidates.json"
 
+    @property
+    def _info_file(self) -> Path:
+        return self.persist_dir / "index_info.json"
+
+    def _saved_model(self) -> str:
+        """Which embedding model built the saved index (indexes from before this check used the default)."""
+        try:
+            return json.loads(self._info_file.read_text(encoding="utf-8"))["embedding_model"]
+        except Exception:
+            return "all-MiniLM-L6-v2"
+
     def _is_resume(self, doc) -> bool:
         parts = [p.lower() for p in Path(doc.metadata.get("source", "")).parts[:-1]]
         return any(p in self.only_dirs for p in parts)
@@ -134,6 +146,7 @@ class ResumeShortlister:
         self.store.build_from_documents(docs)   # also saves faiss.index + metadata.pkl
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self._candidates_file.write_text(json.dumps(self.candidates, ensure_ascii=False), encoding="utf-8")
+        self._info_file.write_text(json.dumps({"embedding_model": self.embedding_model}), encoding="utf-8")
         print(f"[INFO] Shortlister built: {len(self.candidates)} candidates")
 
     def load(self) -> None:
@@ -152,10 +165,14 @@ class ResumeShortlister:
     def ensure(self, data_dir: str = "data") -> None:
         """Load the saved index if it exists, otherwise build it (slow the first time)."""
         needed = ["faiss.index", "metadata.pkl", "candidates.json"]
-        if all((self.persist_dir / f).exists() for f in needed):
-            self.load()
-        else:
+        if not all((self.persist_dir / f).exists() for f in needed):
             self.build(data_dir)
+        elif self._saved_model() != self.embedding_model:
+            print(f"[INFO] Saved index was built with '{self._saved_model()}', not '{self.embedding_model}': rebuilding.")
+            self._store = None                      # drop the store holding the old model/index
+            self.build(data_dir)
+        else:
+            self.load()
 
     # ---------- ranking ----------
     def _semantic_scores(self, query: str) -> Dict[str, dict]:

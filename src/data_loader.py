@@ -9,6 +9,7 @@ from langchain_community.document_loaders import TextLoader
 
 from langchain_community.document_loaders import CSVLoader
 
+
 def load_all_documents(data_dir: str) -> List[Any]: 
     """
     Load all supported files from the data directory and convert to LangChain document structure 
@@ -61,3 +62,32 @@ def load_all_documents(data_dir: str) -> List[Any]:
             documents.extend(loaded)
         except Exception as e:
             print(f"[ERROR] Failed to load CSV file {csv_file}: {e}")
+
+        # Excel files
+    excel_files = list(data_path.glob('**/*.xlsx')) + list(data_path.glob('**/*.xls'))
+    print(f"[DEBUG] Found {len(excel_files)} Excel files: {[str(f) for f in excel_files]}")
+    for excel_file in excel_files:
+        print(f"[DEBUG] Loading Excel file: {excel_file}")
+        try:
+            loader = UnstructuredExcelLoader(str(excel_file))
+            loaded = loader.load()
+            print(f"[DEBUG] Loaded {len(loaded)} Excel docs from {excel_file}")
+            documents.extend(loaded)
+        except Exception as e:
+            print(f"[ERROR] Failed to load Excel file {excel_file}: {e}")
+
+    # Word files
+    word_files = list(data_path.glob('**/*.docx'))
+    print(f"[DEBUG] Found {len(word_files)} Word files: {[str(f) for f in word_files]}")
+    for word_file in word_files:
+        print(f"[DEBUG] Loading Word file: {word_file}")
+        try:
+            loader = Docx2txtLoader(str(word_file))
+            loaded = loader.load()
+            print(f"[DEBUG] Loaded {len(loaded)} Word docs from {word_file}")
+            documents.extend(loaded)
+        except Exception as e:
+            print(f"[ERROR] Failed to load Word file {word_file}: {e}")
+
+    print(f"[DEBUG] Total documents loaded: {len(documents)}")
+    return documents

@@ -19,6 +19,7 @@ dependencies = [
     "pymupdf>=2.1",
     "pypdf>=7.1.1",
     "python-dotenv>=1.2.4",
+    "rapidocr>=3.10.0",
     "scikit-learn>=1.9.1",
     "sentence-transformers>=6.3.0",
     "unstructured>=0.27.37",

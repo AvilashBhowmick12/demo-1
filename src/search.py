@@ -133,4 +133,4 @@ Answer:
         # 4. Generate response using Gemini
         response = self.llm.invoke(prompt)
 
-        return response.content
+        return response.text

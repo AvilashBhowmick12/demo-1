@@ -38,6 +38,8 @@ JSON schema:
   "nice_to_have": [string],
   "strict": boolean,
   "top_n": integer,
+  "min_years": number | null,
+  "max_years": number | null,
   "targets": [string],
   "reply": string
 }
@@ -55,9 +57,12 @@ Rules:
   nice_to_have: preferred or bonus skills. Use short lowercase keywords, one per item (e.g. "aws",
   "terraform", "python"). Join alternative spellings with "|" (e.g. "kubernetes|k8s").
   Never put the job title in these lists.
+- Experience requirements go ONLY in min_years / max_years, never in the keyword lists or in "query".
+  "4 to 5 years" -> min_years 4, max_years 5; "at least 3 years" or "3+ years" -> min_years 3 only;
+  "junior" or "up to 2 years" -> max_years 2 only; no requirement -> null.
 - strict = true only if candidates lacking the must-haves must be excluded (e.g. "only", "exclude", "must have all").
-- query: one short sentence describing the role or profile, used for semantic matching,
-  e.g. "DevOps engineer building CI/CD pipelines on AWS".
+- query: one short sentence describing the role or profile, used for semantic matching, without any
+  years of experience, e.g. "DevOps engineer building CI/CD pipelines on AWS".
 - top_n: how many results the user wants; default 10.
 - For intents other than "search", copy the current criteria into the fields unchanged.
 """
@@ -90,9 +95,12 @@ class SearchSpec:
     nice_to_have: List[str] = field(default_factory=list)
     strict: bool = False
     top_n: int = 10
+    min_years: Optional[float] = None
+    max_years: Optional[float] = None
 
     def is_empty(self) -> bool:
-        return not (self.query or self.must_have or self.nice_to_have)
+        return not (self.query or self.must_have or self.nice_to_have
+                    or self.min_years is not None or self.max_years is not None)
 
     def describe(self) -> str:
         if self.is_empty():
@@ -104,6 +112,10 @@ class SearchSpec:
             parts.append("must: " + ", ".join(self.must_have))
         if self.nice_to_have:
             parts.append("nice: " + ", ".join(self.nice_to_have))
+        if self.min_years is not None or self.max_years is not None:
+            lo = f"{self.min_years:g}" if self.min_years is not None else "0"
+            hi = f"{self.max_years:g}" if self.max_years is not None else "+"
+            parts.append(f"experience: {lo}-{hi} yrs" if self.max_years is not None else f"experience: {lo}+ yrs")
         if self.strict:
             parts.append("strict (must-haves required)")
         parts.append(f"top {self.top_n}")
@@ -130,6 +142,14 @@ def _str_list(value: Any) -> List[str]:
     return out
 
 
+def _opt_float(value: Any) -> Optional[float]:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if 0 <= v <= 60 else None
+
+
 def spec_from_json(data: dict, fallback: "SearchSpec") -> "SearchSpec":
     try:
         top_n = int(data.get("top_n", fallback.top_n))
@@ -141,6 +161,8 @@ def spec_from_json(data: dict, fallback: "SearchSpec") -> "SearchSpec":
         nice_to_have=_str_list(data.get("nice_to_have")),
         strict=bool(data.get("strict", False)),
         top_n=max(1, min(top_n, MAX_TOP_N)),
+        min_years=_opt_float(data.get("min_years")),
+        max_years=_opt_float(data.get("max_years")),
     )
 
 
@@ -210,6 +232,8 @@ class ChatShortlister:
             nice_to_have=spec.nice_to_have,
             top_n=spec.top_n,
             strict=spec.strict,
+            min_years=spec.min_years,
+            max_years=spec.max_years,
         )
         return self.format_results()
 
@@ -225,7 +249,8 @@ class ChatShortlister:
             missing = ", ".join(t.split("|")[0] for t in r["missing_must"]) or "-"
             lines.append(f"{rank:>2}. {r['source_file']:<34} score {r['score']:>5}  "
                          f"(keywords {r['keyword_score']} | semantic {r['semantic_score']})")
-            lines.append(f"      has: {has}   missing must-haves: {missing}")
+            exp = "exp unknown" if r.get("years") is None else f"exp ~{r['years']:g} yrs ({r['years_source']})"
+            lines.append(f"      has: {has}   missing must-haves: {missing}   {exp}")
         return "\n".join(lines)
 
     def _resolve_targets(self, targets: List[str]) -> List[int]:
@@ -255,6 +280,8 @@ class ChatShortlister:
             blocks.append(
                 f"### Rank {i + 1}: {r['source_file']}\n"
                 f"Scores: final {r['score']}, keywords {r['keyword_score']}, semantic {r['semantic_score']}\n"
+                f"Estimated experience: {r.get('years')} years (source: {r.get('years_source')}; a resume's own claim, "
+                f"else summed job dates; approximate)\n"
                 f"Matched must-haves: {r['matched_must']}; missing must-haves: {r['missing_must']}; "
                 f"matched nice-to-haves: {r['matched_nice']}\n"
                 f"Keyword mentions: {r['mentions']}\n"

@@ -18,6 +18,8 @@ import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+from src.experience import estimate_experience
+
 # Spellings that should count as the same skill. Every name in a group matches any other.
 SYNONYMS = [
     ["kubernetes", "k8s"],
@@ -30,6 +32,10 @@ SYNONYMS = [
     ["node.js", "nodejs", "node js"],
     ["power bi", "powerbi"],
     ["machine learning", "ml"],
+    ["llm", "large language model"],
+    ["rag", "retrieval augmented generation", "retrieval-augmented generation"],
+    ["nlp", "natural language processing"],
+    ["genai", "generative ai"],
 ]
 _SYN = {name: group for group in SYNONYMS for name in group}
 
@@ -57,6 +63,8 @@ def _compile(names: Iterable[str]) -> List["re.Pattern"]:
     patterns = []
     for n in names:
         body = re.escape(n).replace(r"\ ", r"\s+")
+        if len(n) >= 3 and n[-1].isalpha():
+            body += "s?"                      # plural: pipeline(s), LLM(s)
         # not glued to other letters/digits; lets "c++", ".net", "node.js" work
         patterns.append(re.compile(r"(?<![A-Za-z0-9+#])" + body + r"(?![A-Za-z0-9+#])", re.I))
     return patterns
@@ -122,6 +130,7 @@ class ResumeShortlister:
             cid: {"source_file": files[cid], "text": "\n".join(t for _, t in sorted(p))}
             for cid, p in pages.items()
         }
+        self._add_experience()
         self.store.build_from_documents(docs)   # also saves faiss.index + metadata.pkl
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self._candidates_file.write_text(json.dumps(self.candidates, ensure_ascii=False), encoding="utf-8")
@@ -130,7 +139,15 @@ class ResumeShortlister:
     def load(self) -> None:
         self.store.load()
         self.candidates = json.loads(self._candidates_file.read_text(encoding="utf-8"))
+        self._add_experience()
         print(f"[INFO] Shortlister loaded: {len(self.candidates)} candidates")
+
+    def _add_experience(self) -> None:
+        """Estimate years of experience for every candidate (cheap, so recomputed on every load)."""
+        for info in self.candidates.values():
+            e = estimate_experience(info["text"])
+            info["years"], info["years_source"] = e["years"], e["source"]
+            info["years_stated"], info["years_dates"] = e["stated"], e["dates"]
 
     def ensure(self, data_dir: str = "data") -> None:
         """Load the saved index if it exists, otherwise build it (slow the first time)."""
@@ -173,10 +190,16 @@ class ResumeShortlister:
         nice_to_have: Iterable[str] = (),
         top_n: int = 10,
         strict: bool = False,
+        min_years: Optional[float] = None,
+        max_years: Optional[float] = None,
     ) -> List[dict]:
         """Return the top_n candidates, best first.
 
-        strict=True drops every candidate that lacks any must-have keyword.
+        Candidates that mention none of the given keywords are left out.
+        strict=True also drops every candidate that lacks any must-have keyword.
+        min_years / max_years keep only candidates whose estimated experience fits (resumes with
+        no estimate are kept and marked years=None, unless strict=True). A date-based estimate gets
+        1 year of tolerance; a stated figure gets none.
         """
         must = list(must_have)
         nice = list(nice_to_have)
@@ -201,6 +224,19 @@ class ResumeShortlister:
             matched_nice = [t for t, c in nice_counts.items() if c]
             if strict and missing_must:
                 continue
+            if has_keywords and not (matched_must or matched_nice):
+                continue                       # mentions none of the wanted skills
+            years, years_src = info.get("years"), info.get("years_source")
+            if min_years is not None or max_years is not None:
+                if years is None:
+                    if strict:
+                        continue
+                else:
+                    tol = 0.0 if years_src == "stated" else 1.0
+                    if min_years is not None and years + tol < min_years:
+                        continue
+                    if max_years is not None and years - tol > max_years:
+                        continue
 
             if total_weight:
                 coverage = (W_MUST * len(matched_must) + W_NICE * len(matched_nice)) / total_weight
@@ -222,6 +258,8 @@ class ResumeShortlister:
                 "missing_must": missing_must,
                 "matched_nice": matched_nice,
                 "mentions": {**must_counts, **nice_counts},
+                "years": years,
+                "years_source": years_src,
                 "snippet": sem["snippet"][:300],
             })
 

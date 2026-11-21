@@ -6,7 +6,7 @@ from typing import List, Any
 from sentence_transformers import SentenceTransformer 
 from src.embedding import EmbeddingPipeline 
 
-class faissVectorStore:
+class FaissVectorStore:
     def __init__(self, persist_dir: str = "faiss_store", embedding_model: str = "all-MiniLM-L6-v2", chunk_size: int = 1000, chunk_overlap: int = 200):
         self.persist_dir = persist_dir 
         os.makedirs(self.persist_dir, exist_ok=True) 
@@ -20,7 +20,7 @@ class faissVectorStore:
 
     def build_from_documents(self, documents: List[Any]): 
         print(f"[INFO].Building vector store from {len(documents)} raw documents...") 
-        emb_pipe =EmbeddingPipeline(model_name=self.embedding_model,chunk_size=self.chunk)
+        emb_pipe = EmbeddingPipeline(model_name=self.embedding_model, chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap)
         chunks = emb_pipe.chunk_documents(documents) 
         embeddings=emb_pipe.embed_chunks(chunks) 
         metadatas = [{"text": chunk. page_content} for chunk in chunks] 
@@ -49,9 +49,11 @@ class faissVectorStore:
     def search(self, query_embedding: np.ndarray, top_k: int = 5): 
         D, I = self.index.search(query_embedding, top_k) 
         results = [] 
-        for idx, dist in zip(I[0], D[0]): 
-            meta = self.metadata[idx] if idx < len(self.metadata) else None 
-            results.append({"index": idx, "distance": dist, "metadata": meta}) 
+        for idx, dist in zip(I[0], D[0]):
+            if idx == -1:
+                continue
+            meta = self.metadata[idx] if idx < len(self.metadata) else None
+            results.append({"index": int(idx), "distance": float(dist), "metadata": meta})
         return results
 
     def query(self, query_text: str, top_k: int = 5): 

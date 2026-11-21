@@ -1,7 +1,9 @@
 """Resume shortlisting: rank candidates (one row per resume) for a job description.
 
-Score = keyword coverage (exact skills, from the full resume text)
-        + semantic similarity (best-matching chunk of the resume vs. the query).
+Score = keyword score  (70%): how many of the wanted skills appear (coverage) and how
+                              much each is mentioned (depth), from the full resume text
+        + semantic score (30%): how close the resume's best chunks are to the query,
+                              ranked against all other resumes (0..1 percentile).
 
 Keywords come in two kinds:
   must_have     - skills the candidate is expected to have (weight 2)
@@ -9,7 +11,9 @@ Keywords come in two kinds:
 A keyword may list alternatives with "|", e.g. "kubernetes|k8s". Some common
 synonyms are built in (see SYNONYMS).
 """
+import bisect
 import json
+import math
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -31,7 +35,9 @@ _SYN = {name: group for group in SYNONYMS for name in group}
 
 W_MUST, W_NICE = 2.0, 1.0          # weight of a must-have / nice-to-have keyword
 W_KEYWORD, W_SEMANTIC = 0.7, 0.3   # balance of the final score (when keywords are given)
-SEM_LOW, SEM_HIGH = 0.15, 0.65     # cosine range mapped to 0..1 for MiniLM; tune on real data
+KW_COVERAGE, KW_DEPTH = 0.7, 0.3   # inside the keyword score: skills present vs. how often mentioned
+DEPTH_SATURATION = 20              # this many mentions of one skill counts as "full depth"
+SEM_TOP_CHUNKS = 3                 # semantic score uses the mean of a resume's best N chunks
 
 
 def expand_term(term: str) -> List[str]:
@@ -58,6 +64,11 @@ def _compile(names: Iterable[str]) -> List["re.Pattern"]:
 
 def count_mentions(text: str, patterns: List["re.Pattern"]) -> int:
     return sum(len(p.findall(text)) for p in patterns)
+
+
+def _depth(count: int) -> float:
+    """0..1 for how much a skill is mentioned; grows quickly at first, then flattens."""
+    return min(1.0, math.log1p(count) / math.log1p(DEPTH_SATURATION))
 
 
 def _candidate_id(meta: dict) -> str:
@@ -131,19 +142,29 @@ class ResumeShortlister:
 
     # ---------- ranking ----------
     def _semantic_scores(self, query: str) -> Dict[str, dict]:
-        """Best chunk per candidate: {candidate_id: {"sim": 0..1, "snippet": str}}."""
+        """Per candidate: raw cosine of its best chunks, a pool-relative percentile, and a snippet."""
         hits = self.store.query(query, top_k=self.store.index.ntotal)
-        best: Dict[str, dict] = {}
+        sims: Dict[str, list] = {}
+        snippet: Dict[str, tuple] = {}
         for h in hits:
             meta = h.get("metadata") or {}
             cid = meta.get("candidate_id")
             if cid is None:
                 continue
             cos = 1.0 - float(h["distance"]) / 2.0          # vectors are L2-normalised
-            sim = min(1.0, max(0.0, (cos - SEM_LOW) / (SEM_HIGH - SEM_LOW)))
-            if cid not in best or sim > best[cid]["sim"]:
-                best[cid] = {"sim": sim, "snippet": meta.get("text", "")}
-        return best
+            sims.setdefault(cid, []).append(cos)
+            if cid not in snippet or cos > snippet[cid][0]:
+                snippet[cid] = (cos, meta.get("text", ""))
+
+        raw = {cid: sum(sorted(v, reverse=True)[:SEM_TOP_CHUNKS]) / min(len(v), SEM_TOP_CHUNKS)
+               for cid, v in sims.items()}
+        ordered = sorted(raw.values())
+        n = len(ordered)
+        out: Dict[str, dict] = {}
+        for cid, r in raw.items():
+            below = bisect.bisect_left(ordered, r)           # how many candidates score lower
+            out[cid] = {"raw": r, "sim": below / (n - 1) if n > 1 else 1.0, "snippet": snippet[cid][1]}
+        return out
 
     def shortlist(
         self,
@@ -181,8 +202,14 @@ class ResumeShortlister:
             if strict and missing_must:
                 continue
 
-            kw = ((W_MUST * len(matched_must) + W_NICE * len(matched_nice)) / total_weight) if total_weight else 0.0
-            sem = semantic.get(cid, {"sim": 0.0, "snippet": ""})
+            if total_weight:
+                coverage = (W_MUST * len(matched_must) + W_NICE * len(matched_nice)) / total_weight
+                depth = (sum(W_MUST * _depth(c) for c in must_counts.values())
+                         + sum(W_NICE * _depth(c) for c in nice_counts.values())) / total_weight
+                kw = KW_COVERAGE * coverage + KW_DEPTH * depth
+            else:
+                kw = 0.0
+            sem = semantic.get(cid, {"raw": 0.0, "sim": 0.0, "snippet": ""})
             score = (W_KEYWORD * kw + W_SEMANTIC * sem["sim"]) if has_keywords else sem["sim"]
             results.append({
                 "candidate_id": cid,
@@ -190,6 +217,7 @@ class ResumeShortlister:
                 "score": round(100 * score, 1),
                 "keyword_score": round(100 * kw, 1),
                 "semantic_score": round(100 * sem["sim"], 1),
+                "semantic_raw": round(sem["raw"], 3),
                 "matched_must": matched_must,
                 "missing_must": missing_must,
                 "matched_nice": matched_nice,

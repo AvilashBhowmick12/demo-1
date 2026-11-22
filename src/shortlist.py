@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from src.experience import estimate_experience
+from src.names import extract_name
 
 # Spellings that should count as the same skill. Every name in a group matches any other.
 SYNONYMS = [
@@ -143,6 +144,7 @@ class ResumeShortlister:
             for cid, p in pages.items()
         }
         self._add_experience()
+        self._add_names()
         self.store.build_from_documents(docs)   # also saves faiss.index + metadata.pkl
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self._candidates_file.write_text(json.dumps(self.candidates, ensure_ascii=False), encoding="utf-8")
@@ -153,6 +155,7 @@ class ResumeShortlister:
         self.store.load()
         self.candidates = json.loads(self._candidates_file.read_text(encoding="utf-8"))
         self._add_experience()
+        self._add_names()
         print(f"[INFO] Shortlister loaded: {len(self.candidates)} candidates")
 
     def _add_experience(self) -> None:
@@ -161,6 +164,19 @@ class ResumeShortlister:
             e = estimate_experience(info["text"])
             info["years"], info["years_source"] = e["years"], e["source"]
             info["years_stated"], info["years_dates"] = e["stated"], e["dates"]
+
+    def _add_names(self) -> None:
+        """Extract each candidate's name; a name shared by 4+ resumes is flagged as a placeholder."""
+        for info in self.candidates.values():
+            n = extract_name(info["text"], info.get("source_file", ""))
+            info["name"], info["name_source"], info["name_placeholder"] = n["name"], n["source"], n["placeholder"]
+        counts: Dict[str, int] = {}
+        for info in self.candidates.values():
+            if info["name"]:
+                counts[info["name"].lower()] = counts.get(info["name"].lower(), 0) + 1
+        for info in self.candidates.values():
+            if info["name"] and counts[info["name"].lower()] >= 4:
+                info["name_placeholder"] = True
 
     def ensure(self, data_dir: str = "data") -> None:
         """Load the saved index if it exists, otherwise build it (slow the first time)."""
@@ -267,6 +283,9 @@ class ResumeShortlister:
             results.append({
                 "candidate_id": cid,
                 "source_file": info["source_file"],
+                "name": info.get("name"),
+                "name_source": info.get("name_source"),
+                "name_placeholder": info.get("name_placeholder", False),
                 "score": round(100 * score, 1),
                 "keyword_score": round(100 * kw, 1),
                 "semantic_score": round(100 * sem["sim"], 1),

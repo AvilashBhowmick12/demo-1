@@ -94,3 +94,20 @@ def load_all_documents(data_dir: str) -> List[Any]:
 
     print(f"[DEBUG] Total documents loaded: {len(documents)}")
     return documents
+
+
+def load_single_document(path, cache_dir=None) -> List[Any]:
+    """Load one resume (pdf / docx / txt) with the same metadata the bulk loader produces."""
+    path = Path(path)
+    ext = path.suffix.lower()
+    if ext == ".pdf":
+        return load_pdf(path, cache_dir=cache_dir)
+    if ext == ".docx":
+        docs = Docx2txtLoader(str(path)).load()
+    elif ext == ".txt":
+        docs = TextLoader(str(path), encoding="utf-8").load()
+    else:
+        raise ValueError(f"Unsupported file type: {ext}")
+    for d in docs:
+        d.metadata.update({"source_file": path.name, "candidate_id": path.stem})
+    return docs

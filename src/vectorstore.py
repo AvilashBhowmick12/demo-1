@@ -84,3 +84,28 @@ class FaissVectorStore:
         query_emb = self.model.encode([query_text]).astype('float32') 
         faiss.normalize_L2(query_emb)
         return self.search(query_emb, top_k=top_k)
+
+### if any new pdf resume is pushed to the model, such that it can read it as well for the new run
+    def add_documents(self, documents: List[Any]) -> int:
+        """Chunk, embed and append NEW documents to the existing index (no rebuild)."""
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap,
+            length_function=len, separators=["\n\n", "\n", " ", ""])
+        chunks = splitter.split_documents(documents)
+        if not chunks:
+            return 0
+        emb = self.model.encode([c.page_content for c in chunks]).astype("float32")
+        faiss.normalize_L2(emb)
+        metadatas = []
+        for c in chunks:
+            source = c.metadata.get("source", "")
+            metadatas.append({
+                "text": c.page_content,
+                "candidate_id": c.metadata.get("candidate_id") or Path(source).stem,
+                "source_file": c.metadata.get("source_file") or Path(source).name,
+                "page": c.metadata.get("page"),
+            })
+        self.add_embeddings(emb, metadatas)
+        self.save()
+        return len(chunks)

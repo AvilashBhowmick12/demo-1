@@ -301,3 +301,28 @@ class ResumeShortlister:
 
         results.sort(key=lambda r: (-r["score"], -sum(r["mentions"].values())))
         return results[:top_n]
+
+### when new resume is added to the model 22-11-26
+    def add_resume(self, file_path: str, data_dir: str = "data") -> dict:
+        """Add ONE new resume to the loaded index without rebuilding (seconds, not hours)."""
+        from src.data_loader import load_single_document
+        path = Path(file_path.strip().strip('"'))
+        if not path.is_file():
+            raise FileNotFoundError(f"File not found: {path}")
+        if not self.candidates:
+            self.load()
+        cid = path.stem
+        if cid in self.candidates:
+            return {"status": "already indexed", "candidate_id": cid}
+        docs = load_single_document(path, cache_dir=Path(data_dir) / "ocr_cache")
+        if not docs:
+            return {"status": "no text found (blank or unreadable file)", "candidate_id": cid}
+        chunks = self.store.add_documents(docs)      # embeds, then saves faiss.index + metadata.pkl
+        pages = sorted((d.metadata.get("page") or 0, d.page_content) for d in docs)
+        self.candidates[cid] = {"source_file": path.name, "text": "\n".join(t for _, t in pages)}
+        self._add_experience()
+        self._add_names()
+        self._candidates_file.write_text(json.dumps(self.candidates, ensure_ascii=False), encoding="utf-8")
+        c = self.candidates[cid]
+        return {"status": "added", "candidate_id": cid, "name": c["name"],
+                "chunks": chunks, "years": c["years"]}

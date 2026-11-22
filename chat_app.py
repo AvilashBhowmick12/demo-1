@@ -24,14 +24,20 @@ Commands:
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 
 
+RESUME_TYPES = (".pdf", ".docx", ".txt")
+
 def find_resume_file(arg: str):
-    """Accept a full path, or just a file name that lives in data/resume. Returns a Path or None."""
+    """Accept a full path or a file name in data/resume; the extension is optional."""
     arg = arg.strip().strip('"').strip("'")
     if not arg:
         return None
-    for candidate in (Path(arg), RESUME_DIR / arg):
-        if candidate.is_file():
-            return candidate
+    for base in (Path(arg), RESUME_DIR / arg):
+        if base.is_file():
+            return base
+        for ext in RESUME_TYPES:
+            alt = base.with_name(base.name + ext)
+            if alt.is_file():
+                return alt
     return None
 
 

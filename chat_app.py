@@ -15,6 +15,7 @@ HELP = """Describe the role and skills you want, then keep refining. Examples:
   compare the top two
 Commands:
   /add <file>   add ONE new resume without rebuilding (file name inside data\\resume, or a full path)
+  /table        show the last search as a plain ranked list with all scores
   /reset        start over
   /help         show this help
   exit          quit"""
@@ -97,6 +98,9 @@ if __name__ == "__main__":
         if message == "/reset":
             chat.reset()
             print("Started over.")
+            continue
+        if message == "/table":
+            print("\n" + (chat.last_table or "No search yet.") + "\n")
             continue
         if message.lower() == "/add" or message.lower().startswith("/add "):
             handle_add(shortlister, chat, message[4:])

@@ -22,6 +22,8 @@ def load_all_documents(data_dir: str) -> List[Any]:
     seen_hashes = set()
     duplicates = 0
     ocr_pages = 0
+    text_pdfs = 0       # PDFs whose pages all have a real text layer: no OCR needed
+    scanned_pdfs = 0    # PDFs where at least one page had to be OCR'd
     for n, pdf_file in enumerate(pdf_files, 1):
         try:
             digest = file_hash(pdf_file)
@@ -31,22 +33,27 @@ def load_all_documents(data_dir: str) -> List[Any]:
                 continue
             seen_hashes.add(digest)
             loaded = load_pdf(pdf_file, cache_dir=cache_dir, digest=digest)
-            ocr_pages += sum(1 for d in loaded if d.metadata.get("ocr"))
+            pages_ocr = sum(1 for d in loaded if d.metadata.get("ocr"))
+            ocr_pages += pages_ocr
+            if pages_ocr:
+                scanned_pdfs += 1
+            else:
+                text_pdfs += 1
             documents.extend(loaded)
         except Exception as e:
             print(f"[ERROR] failed to load pdf {pdf_file}: {e}")
         if n % 25 == 0:
             print(f"[DEBUG] PDFs processed: {n}/{len(pdf_files)}")
-    print(f"[DEBUG] PDFs loaded: {len(seen_hashes)} unique, {duplicates} duplicates skipped, "
-          f"{ocr_pages} pages came from OCR")
+    print(f"[DEBUG] PDFs loaded: {len(seen_hashes)} unique, {duplicates} duplicates skipped")
+    print(f"[DEBUG]   {text_pdfs} PDFs had a normal text layer (read directly, no OCR); "
+          f"{scanned_pdfs} were scanned ({ocr_pages} pages read with OCR)")
 
     # Text files
     text_files = list(data_path.glob('**/*.txt'))
     print(f"[DEBUG] Found {len(text_files)} Text files")
     for text_file in text_files:
         try:
-            loader = TextLoader(str(text_file), encoding="utf-8")
-            loaded = loader.load()
+            loaded = load_single_document(text_file)
             print(f"[DEBUG] Loaded {len(loaded)} Text docs from {text_file}")
             documents.extend(loaded)
         except Exception as e:
@@ -83,10 +90,13 @@ def load_all_documents(data_dir: str) -> List[Any]:
     # Word files
     word_files = list(data_path.glob('**/*.docx'))
     print(f"[DEBUG] Found {len(word_files)} Word files")
+    pdf_stems = {(p.parent, p.stem.lower()) for p in pdf_files}
     for word_file in word_files:
+        if (word_file.parent, word_file.stem.lower()) in pdf_stems:
+            print(f"[DEBUG] Skipping {word_file.name}: a PDF with the same name exists (same resume)")
+            continue
         try:
-            loader = Docx2txtLoader(str(word_file))
-            loaded = loader.load()
+            loaded = load_single_document(word_file)   # no OCR: the text is read straight from the file
             print(f"[DEBUG] Loaded {len(loaded)} Word docs from {word_file}")
             documents.extend(loaded)
         except Exception as e:
@@ -109,5 +119,6 @@ def load_single_document(path, cache_dir=None) -> List[Any]:
     else:
         raise ValueError(f"Unsupported file type: {ext}")
     for d in docs:
-        d.metadata.update({"source_file": path.name, "candidate_id": path.stem})
+        d.metadata.update({"source_file": path.name, "candidate_id": path.stem, "file_type": ext.lstrip("."),
+                           "page": 0, "ocr": False})
     return docs

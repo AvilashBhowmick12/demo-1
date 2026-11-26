@@ -85,6 +85,18 @@ def _candidate_id(meta: dict) -> str:
     return meta.get("candidate_id") or Path(meta.get("source", "unknown")).stem
 
 
+def _read_via(docs) -> str:
+    """How a file's text was obtained, for the /add message (OCR is only used for scanned pages)."""
+    kind = docs[0].metadata.get("file_type", "")
+    if any(d.metadata.get("ocr") for d in docs):
+        return "OCR (scanned pages)"
+    if kind == "pdf":
+        return "PDF text layer (no OCR needed)"
+    if kind == "docx":
+        return "Word file, read directly (no OCR needed)"
+    return "text file, read directly (no OCR needed)"
+
+
 class ResumeShortlister:
     def __init__(
         self,
@@ -317,6 +329,7 @@ class ResumeShortlister:
         docs = load_single_document(path, cache_dir=Path(data_dir) / "ocr_cache")
         if not docs:
             return {"status": "no text found (blank or unreadable file)", "candidate_id": cid}
+        read_via = _read_via(docs)
         chunks = self.store.add_documents(docs)      # embeds, then saves faiss.index + metadata.pkl
         pages = sorted((d.metadata.get("page") or 0, d.page_content) for d in docs)
         self.candidates[cid] = {"source_file": path.name, "text": "\n".join(t for _, t in pages)}
@@ -325,4 +338,4 @@ class ResumeShortlister:
         self._candidates_file.write_text(json.dumps(self.candidates, ensure_ascii=False), encoding="utf-8")
         c = self.candidates[cid]
         return {"status": "added", "candidate_id": cid, "name": c["name"],
-                "chunks": chunks, "years": c["years"]}
+                "chunks": chunks, "years": c["years"], "read_via": read_via}

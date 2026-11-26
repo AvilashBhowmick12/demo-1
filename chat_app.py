@@ -46,7 +46,7 @@ def describe_added(info: dict) -> str:
         return f"  {info.get('candidate_id', '?')}: {info.get('status')}"
     years = "unknown" if info.get("years") is None else f"~{info['years']:g}"
     return (f"  Added {info['candidate_id']} | name: {info.get('name') or '(not found)'} | "
-            f"experience: {years} yrs | {info['chunks']} chunks")
+            f"experience: {years} yrs | {info['chunks']} chunks | read via: {info.get('read_via', '?')}")
 
 
 def handle_add(shortlister, chat, arg: str) -> None:

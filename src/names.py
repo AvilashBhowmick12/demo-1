@@ -83,9 +83,9 @@ _SPACED = re.compile(r"^(?:[^\W\d_] ){2,}[^\W\d_](?:\s{2,}(?:[^\W\d_] ){1,}[^\W\
 
 
 def _spaced_name(text: str) -> Optional[str]:
-    """A letter-spaced name anywhere near the top (Word text boxes can put it late in the text)."""
-    for raw in text.splitlines()[:80]:
-        raw = raw.strip()
+    """A letter-spaced name anywhere anywhere in the first 300 lines (Word text boxes can put it late in the text)."""
+    nonblank = [l.strip() for l in text.splitlines() if l.strip()]
+    for raw in nonblank[:300]:                         # blank lines are skipped: some Word readers put one between paragraphs
         if _SPACED.match(raw):
             joined = " ".join("".join(g.split()) for g in re.split(r"\s{2,}", raw))
             if _looks_like_name(joined):

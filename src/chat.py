@@ -58,7 +58,10 @@ Rules:
 - "chat": greetings, help, or anything else. Put a short helpful answer in "reply".
 - must_have: skills, tools or qualifications that are required (the user says must, needs, with, required).
   nice_to_have: preferred or bonus skills. Use short lowercase keywords, one per item (e.g. "aws",
-  "terraform", "python"). Join alternative spellings with "|" (e.g. "kubernetes|k8s").
+  "terraform", "python"). Join alternative spellings with "|" (e.g. "kubernetes|k8s"). This includes
+  full names, abbreviations and old or new names of companies and products, so a resume that uses the other name is
+  still found (e.g. "ltm|ltimindtree|lti mindtree" because LTIMindtree is now called LTM, "aws|amazon web services",
+  "meta|facebook", "x|twitter").
   Never put the job title in these lists, EXCEPT when the user asks for an exact or specific match of a title
   or role (e.g. "exact match", "who is an administrative assistant", "has the title X") and gives no other skills:
   then put the title phrase itself in must_have (e.g. "administrative assistant") so resumes that really

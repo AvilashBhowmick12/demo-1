@@ -39,6 +39,9 @@ SYNONYMS = [
     ["rag", "retrieval augmented generation", "retrieval-augmented generation"],
     ["nlp", "natural language processing"],
     ["genai", "generative ai"],
+    ["ltm", "ltimindtree", "lti mindtree"],          # LTIMindtree is now called LTM
+    ["tcs", "tata consultancy services"],
+    ["hcl", "hcltech", "hcl technologies"],
 ]
 _SYN = {name: group for group in SYNONYMS for name in group}
 

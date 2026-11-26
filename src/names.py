@@ -31,7 +31,7 @@ _NOT_NAME = {
     "adobe", "photoshop", "django", "website", "development", "personal", "info", "career", "focus", "address",
     "phone", "email", "linkedin", "github", "portfolio", "key", "core", "technical", "tools", "languages",
     "hobbies", "projects", "certifications", "references", "qualifications", "highlights", "expertise",
-    "my", "life", "philosophy", "your", "name", "first", "last", "template", "sample", "page", "hands-on", "agile", "scrum",
+    "social", "media", "secretary", "my", "life", "philosophy", "your", "name", "first", "last", "template", "sample", "page", "hands-on", "agile", "scrum",
 }
 _BAD_CHARS = re.compile(r"[\d@:/|•◆·,()]")
 

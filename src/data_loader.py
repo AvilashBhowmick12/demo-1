@@ -1,5 +1,9 @@
+import re
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Any
+from langchain_core.documents import Document
 from langchain_community.document_loaders import TextLoader, CSVLoader
 from langchain_community.document_loaders import Docx2txtLoader
 from langchain_community.document_loaders.excel import UnstructuredExcelLoader
@@ -106,6 +110,46 @@ def load_all_documents(data_dir: str) -> List[Any]:
     return documents
 
 
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+
+
+def read_docx_text(path) -> str:
+    """Text of a Word file, one line per paragraph (table cells and text boxes included).
+
+    Word stores every text box twice (a modern copy and a 'Fallback' copy for old readers), which
+    makes a plain text extraction repeat whole sections. The fallback copies are dropped here so
+    each line appears once. Headers and footers are left out.
+    """
+    with zipfile.ZipFile(path) as z:
+        root = ET.fromstring(z.read("word/document.xml"))
+    for parent in root.iter():
+        for child in list(parent):
+            if child.tag == _MC_FALLBACK:
+                parent.remove(child)
+    def own_text(el, parts):
+        """Text of one paragraph, not descending into paragraphs nested inside it (text boxes)."""
+        for child in el:
+            if child.tag == _W + "p":
+                continue
+            if child.tag == _W + "t" and child.text:
+                parts.append(child.text)
+            elif child.tag == _W + "tab":
+                parts.append(" ")
+            elif child.tag in (_W + "br", _W + "cr"):
+                parts.append("\n")
+            own_text(child, parts)
+
+    lines = []
+    for p in root.iter(_W + "p"):
+        parts: List[str] = []
+        own_text(p, parts)
+        line = "".join(parts).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def load_single_document(path, cache_dir=None) -> List[Any]:
     """Load one resume (pdf / docx / txt) with the same metadata the bulk loader produces."""
     path = Path(path)
@@ -113,7 +157,12 @@ def load_single_document(path, cache_dir=None) -> List[Any]:
     if ext == ".pdf":
         return load_pdf(path, cache_dir=cache_dir)
     if ext == ".docx":
-        docs = Docx2txtLoader(str(path)).load()
+        try:
+            text = read_docx_text(path)
+            docs = [Document(page_content=text, metadata={"source": str(path)})] if text.strip() else []
+        except Exception as e:      # unusual file: fall back to the generic Word loader
+            print(f"[WARN] own Word reader failed for {path.name} ({type(e).__name__}); using Docx2txtLoader")
+            docs = Docx2txtLoader(str(path)).load()
     elif ext == ".txt":
         docs = TextLoader(str(path), encoding="utf-8").load()
     else:

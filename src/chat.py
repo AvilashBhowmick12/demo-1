@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
+from src.sections import SEARCHABLE_SECTIONS, normalise_section_names
+
 HISTORY_TURNS = 6          # last N messages included in prompts
 ANSWER_CHAR_BUDGET = 15000 # resume text sent to Gemini when answering a question
 MAX_TOP_N = 50
@@ -40,6 +42,7 @@ JSON schema:
   "top_n": integer,
   "min_years": number | null,
   "max_years": number | null,
+  "sections": [string],
   "targets": [string],
   "reply": string
 }
@@ -63,6 +66,13 @@ Rules:
 - Experience requirements go ONLY in min_years / max_years, never in the keyword lists or in "query".
   "4 to 5 years" -> min_years 4, max_years 5; "at least 3 years" or "3+ years" -> min_years 3 only;
   "junior" or "up to 2 years" -> max_years 2 only; no requirement -> null.
+- sections: which PART of each resume to look in. Allowed values: summary, skills, experience, projects,
+  education, certifications, accomplishments. Empty list = the whole resume (the default).
+  Use it only when the user limits the search to a part: "in their experience", "hands-on projects",
+  "who holds a certification in X", "education". "hands-on projects" or "worked on projects" ->
+  ["experience", "projects"]. For a refinement keep the current sections unless the user changes them.
+  For "ask": the part of the resume the user wants to read about (e.g. "tell me about their projects" ->
+  ["projects"]); an empty list means use the sections of the current search.
 - strict = true only if candidates lacking the must-haves must be excluded (e.g. "only", "exclude", "must have all").
 - query: one short sentence describing the role or profile, used for semantic matching, without any
   years of experience, e.g. "DevOps engineer building CI/CD pipelines on AWS".
@@ -103,6 +113,7 @@ class SearchSpec:
     top_n: int = 10
     min_years: Optional[float] = None
     max_years: Optional[float] = None
+    sections: List[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not (self.query or self.must_have or self.nice_to_have
@@ -122,6 +133,8 @@ class SearchSpec:
             lo = f"{self.min_years:g}" if self.min_years is not None else "0"
             hi = f"{self.max_years:g}" if self.max_years is not None else "+"
             parts.append(f"experience: {lo}-{hi} yrs" if self.max_years is not None else f"experience: {lo}+ yrs")
+        if self.sections:
+            parts.append("looking only in: " + ", ".join(self.sections))
         if self.strict:
             parts.append("strict (must-haves required)")
         parts.append(f"top {self.top_n}")
@@ -169,6 +182,7 @@ def spec_from_json(data: dict, fallback: "SearchSpec") -> "SearchSpec":
         top_n=max(1, min(top_n, MAX_TOP_N)),
         min_years=_opt_float(data.get("min_years")),
         max_years=_opt_float(data.get("max_years")),
+        sections=normalise_section_names(data.get("sections") if isinstance(data.get("sections"), list) else []),
     )
 
 
@@ -185,6 +199,7 @@ class ChatShortlister:
         self.results: List[dict] = []
         self.all_results: List[dict] = []
         self.history: List[tuple] = []   # (role, text)
+        self.last_kind = "chat"          # what the latest message was: "search", "ask" or "chat"
 
     # ---------- public ----------
     def reset(self) -> None:
@@ -193,8 +208,11 @@ class ChatShortlister:
         self.all_results = []
         self.history = []
 
-    def handle(self, message: str) -> str:
+    def handle(self, message: str, scope: Optional[List[str]] = None) -> str:
+        """Answer one message. scope (from a GUI drop-down) overrides which resume sections a search
+        looks in: [] = whole resume, ["experience"] = experience only, None = let the message decide."""
         message = message.strip()
+        self.last_kind = "chat"
         if not message:
             return ""
         try:
@@ -204,9 +222,15 @@ class ChatShortlister:
 
         intent = data.get("intent")
         if intent == "search":
-            reply = self._do_search(spec_from_json(data, self.spec))
+            spec = spec_from_json(data, self.spec)
+            if scope is not None:
+                spec.sections = normalise_section_names(scope)
+            reply = self._do_search(spec)
+            self.last_kind = "search"
         elif intent == "ask":
-            reply = self._do_ask(message, _str_list(data.get("targets")))
+            sections = normalise_section_names(data.get("sections") if isinstance(data.get("sections"), list) else [])
+            reply = self._do_ask(message, _str_list(data.get("targets")), sections or self.spec.sections)
+            self.last_kind = "ask"
         else:
             reply = str(data.get("reply") or "Tell me the role and skills you are hiring for, e.g. "
                                               "'DevOps engineer with AWS and Terraform'.")
@@ -242,10 +266,25 @@ class ChatShortlister:
             strict=spec.strict,
             min_years=spec.min_years,
             max_years=spec.max_years,
+            sections=spec.sections,
         )
         self.all_results = everyone
         self.results = everyone[:spec.top_n]
         return self.format_results()
+
+    def summary_line(self) -> str:
+        """One line such as '288 candidates match ...' for the latest search (used by the GUI)."""
+        return self._summary_line()
+
+    def display_name(self, r: dict) -> str:
+        return self._display_name(r)
+
+    def _skipped_note(self) -> str:
+        n = (getattr(self.shortlister, "last_info", None) or {}).get("no_section", 0)
+        if not (self.spec.sections and n):
+            return ""
+        what = " or ".join(self.spec.sections)
+        return f" ({n} resumes have no recognisable {what} section and were not searched.)"
 
     def _summary_line(self) -> str:
         total = len(self.all_results)
@@ -254,11 +293,12 @@ class ChatShortlister:
             full = sum(1 for r in self.all_results if not r["missing_must"])
             some = total - full
             return (f"{total} {found} at least one skill: {full} {'meets' if full == 1 else 'meet'} all "
-                    f"{len(self.spec.must_have)} must-haves, {some} {'meets' if some == 1 else 'meet'} only some.")
+                    f"{len(self.spec.must_have)} must-haves, {some} {'meets' if some == 1 else 'meet'} only some."
+                    f"{self._skipped_note()}")
         if not self.spec.nice_to_have:
             return (f"{total} resumes ranked by how close they are to the role description "
-                    f"(no skill keywords were given, so keyword scores are 0).")
-        return f"{total} {found} at least one of the skills."
+                    f"(no skill keywords were given, so keyword scores are 0).{self._skipped_note()}")
+        return f"{total} {found} at least one of the skills.{self._skipped_note()}"
 
     @staticmethod
     def _short(name: str, width: int = 34) -> str:
@@ -280,6 +320,8 @@ class ChatShortlister:
             lines.append(f"      file: {r['source_file']}")
             exp = "exp unknown" if r.get("years") is None else f"exp ~{r['years']:g} yrs ({r['years_source']})"
             lines.append(f"      has: {has}   missing must-haves: {missing}   {exp}")
+            for ex in r.get("excerpt") or []:
+                lines.append(f"      in {'/'.join(r.get('sections') or [])}: {ex}")
         if any(r.get("name_placeholder") for r in self.results):
             lines.append("(sample name) = the name inside that resume is a placeholder shared by many resumes; "
                          "identify those by file name.")
@@ -308,7 +350,7 @@ class ChatShortlister:
                     picked.append(i)
         return picked or list(range(min(5, len(self.results))))
 
-    def _do_ask(self, message: str, targets: List[str]) -> str:
+    def _do_ask(self, message: str, targets: List[str], sections: Optional[List[str]] = None) -> str:
         if not self.results:
             return "There is no shortlist yet. Describe the role and skills first, then ask me about the results."
         idx = self._resolve_targets(targets)
@@ -316,7 +358,12 @@ class ChatShortlister:
         blocks = []
         for i in idx:
             r = self.results[i]
-            text = self.shortlister.candidates.get(r["candidate_id"], {}).get("text", "")
+            if sections:
+                text = self.shortlister.scope_text(r["candidate_id"], sections) or "(this resume has no such section)"
+                label = f"Resume text, {'/'.join(sections)} section only (may be truncated)"
+            else:
+                text = self.shortlister.candidates.get(r["candidate_id"], {}).get("text", "")
+                label = "Resume text (may be truncated)"
             blocks.append(
                 f"### Rank {i + 1}: {self._display_name(r)}, file {r['source_file']}\n"
                 f"Scores: final {r['score']}, keywords {r['keyword_score']}, semantic {r['semantic_score']}\n"
@@ -325,7 +372,7 @@ class ChatShortlister:
                 f"Matched must-haves: {r['matched_must']}; missing must-haves: {r['missing_must']}; "
                 f"matched nice-to-haves: {r['matched_nice']}\n"
                 f"Keyword mentions: {r['mentions']}\n"
-                f"Resume text (may be truncated):\n{text[:per_candidate]}"
+                f"{label}:\n{text[:per_candidate]}"
             )
         prompt = (ANSWER_PROMPT
                   .replace("<<SPEC>>", self.spec.describe())

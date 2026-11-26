@@ -20,6 +20,7 @@ from typing import Dict, Iterable, List, Optional
 
 from src.experience import estimate_experience
 from src.names import extract_name
+from src.sections import normalise_section_names, section_text, split_sections
 
 # Spellings that should count as the same skill. Every name in a group matches any other.
 SYNONYMS = [
@@ -46,6 +47,8 @@ W_KEYWORD, W_SEMANTIC = 0.7, 0.3   # balance of the final score (when keywords a
 KW_COVERAGE, KW_DEPTH = 0.7, 0.3   # inside the keyword score: skills present vs. how often mentioned
 DEPTH_SATURATION = 20              # this many mentions of one skill counts as "full depth"
 SEM_TOP_CHUNKS = 3                 # semantic score uses the mean of a resume's best N chunks
+EXCERPT_LINES = 4                  # lines of the searched section shown for each candidate
+EXCERPT_LINE_CHARS = 150
 
 
 def expand_term(term: str) -> List[str]:
@@ -109,7 +112,8 @@ class ResumeShortlister:
         self.embedding_model = embedding_model
         self.only_dirs = {d.lower() for d in only_dirs}
         self._store = store
-        self.candidates: Dict[str, dict] = {}   # candidate_id -> {"source_file", "text"}
+        self.candidates: Dict[str, dict] = {}   # candidate_id -> {"source_file", "text", ...}
+        self.last_info: dict = {}               # extra facts about the latest shortlist() call
 
     # ---------- storage ----------
     @property
@@ -157,6 +161,7 @@ class ResumeShortlister:
         }
         self._add_experience()
         self._add_names()
+        self._add_sections()
         self.store.build_from_documents(docs)   # also saves faiss.index + metadata.pkl
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self._candidates_file.write_text(json.dumps(self.candidates, ensure_ascii=False), encoding="utf-8")
@@ -168,6 +173,7 @@ class ResumeShortlister:
         self.candidates = json.loads(self._candidates_file.read_text(encoding="utf-8"))
         self._add_experience()
         self._add_names()
+        self._add_sections()
         print(f"[INFO] Shortlister loaded: {len(self.candidates)} candidates")
 
     def _add_experience(self) -> None:
@@ -190,6 +196,19 @@ class ResumeShortlister:
             if info["name"] and counts[info["name"].lower()] >= 4:
                 info["name_placeholder"] = True
 
+    def _add_sections(self) -> None:
+        """Split every resume into sections (experience, skills, ...). Cheap, so redone on every load."""
+        for info in self.candidates.values():
+            info["sections"] = split_sections(info["text"])
+
+    def scope_text(self, candidate_id: str, sections: Iterable[str] = ()) -> str:
+        """Text of the given sections of one resume, or the whole resume when no section is given."""
+        info = self.candidates.get(candidate_id, {})
+        wanted = normalise_section_names(sections)
+        if not wanted:
+            return info.get("text", "")
+        return section_text(info.get("sections", {}), wanted)
+
     def ensure(self, data_dir: str = "data") -> None:
         """Load the saved index if it exists, otherwise build it (slow the first time)."""
         needed = ["faiss.index", "metadata.pkl", "candidates.json"]
@@ -203,8 +222,21 @@ class ResumeShortlister:
             self.load()
 
     # ---------- ranking ----------
-    def _semantic_scores(self, query: str) -> Dict[str, dict]:
-        """Per candidate: raw cosine of its best chunks, a pool-relative percentile, and a snippet."""
+    @staticmethod
+    def _chunk_in_scope(chunk_text: str, scope: str) -> bool:
+        """True if this chunk lies inside the scope text (checked by its middle, so chunks that
+        only touch the edge of a section count for the section they mostly belong to)."""
+        t = chunk_text.strip()
+        if not t:
+            return False
+        mid = len(t) // 2
+        return t[max(0, mid - 30): mid + 30] in scope
+
+    def _semantic_scores(self, query: str, scopes: Optional[Dict[str, str]] = None) -> Dict[str, dict]:
+        """Per candidate: raw cosine of its best chunks, a pool-relative percentile, and a snippet.
+
+        scopes (candidate_id -> section text) restricts the chunks to those inside the section.
+        """
         hits = self.store.query(query, top_k=self.store.index.ntotal)
         sims: Dict[str, list] = {}
         snippet: Dict[str, tuple] = {}
@@ -212,6 +244,8 @@ class ResumeShortlister:
             meta = h.get("metadata") or {}
             cid = meta.get("candidate_id")
             if cid is None:
+                continue
+            if scopes is not None and not self._chunk_in_scope(meta.get("text", ""), scopes.get(cid, "")):
                 continue
             cos = 1.0 - float(h["distance"]) / 2.0          # vectors are L2-normalised
             sims.setdefault(cid, []).append(cos)
@@ -237,6 +271,7 @@ class ResumeShortlister:
         strict: bool = False,
         min_years: Optional[float] = None,
         max_years: Optional[float] = None,
+        sections: Iterable[str] = (),
     ) -> List[dict]:
         """Return the top_n candidates, best first.
 
@@ -245,6 +280,9 @@ class ResumeShortlister:
         min_years / max_years keep only candidates whose estimated experience fits (resumes with
         no estimate are kept and marked years=None, unless strict=True). A date-based estimate gets
         1 year of tolerance; a stated figure gets none.
+        sections (e.g. ["experience"]) limits keyword counting, semantic matching and the shown
+        excerpt to those parts of each resume. Resumes without such a section are skipped and
+        counted in self.last_info["no_section"].
         """
         must = list(must_have)
         nice = list(nice_to_have)
@@ -257,11 +295,21 @@ class ResumeShortlister:
         nice_pat = {t: _compile(expand_term(t)) for t in nice}
         has_keywords = bool(must or nice)
         total_weight = W_MUST * len(must) + W_NICE * len(nice)
-        semantic = self._semantic_scores(query)
+        wanted = normalise_section_names(sections)
+        scopes: Optional[Dict[str, str]] = None
+        no_section = 0
+        if wanted:
+            scopes = {cid: section_text(info.get("sections", {}), wanted)
+                      for cid, info in self.candidates.items()}
+        semantic = self._semantic_scores(query, scopes)
+        all_pat = [p for pats in list(must_pat.values()) + list(nice_pat.values()) for p in pats]
 
         results = []
         for cid, info in self.candidates.items():
-            text = info["text"]
+            text = scopes[cid] if scopes is not None else info["text"]
+            if scopes is not None and not text:
+                no_section += 1
+                continue
             must_counts = {t: count_mentions(text, p) for t, p in must_pat.items()}
             nice_counts = {t: count_mentions(text, p) for t, p in nice_pat.items()}
             matched_must = [t for t, c in must_counts.items() if c]
@@ -309,10 +357,21 @@ class ResumeShortlister:
                 "years": years,
                 "years_source": years_src,
                 "snippet": sem["snippet"][:300],
+                "sections": wanted,
+                "excerpt": self._excerpt(text, all_pat) if wanted else [],
             })
 
+        self.last_info = {"sections": wanted, "no_section": no_section}
         results.sort(key=lambda r: (-r["score"], -sum(r["mentions"].values())))
         return results[:top_n]
+
+    @staticmethod
+    def _excerpt(text: str, patterns: List["re.Pattern"]) -> List[str]:
+        """A few lines of the section: the ones that mention the wanted skills (else the first lines)."""
+        lines = [l.strip(" \t•●▪-*") for l in text.split("\n") if len(l.strip()) > 3]
+        hit = [i for i, l in enumerate(lines) if any(p.search(l) for p in patterns)] if patterns else []
+        picked = hit[:EXCERPT_LINES] or list(range(min(EXCERPT_LINES, len(lines))))
+        return [lines[i][:EXCERPT_LINE_CHARS] for i in picked]
 
 ### when new resume is added to the model 22-11-26
     def add_resume(self, file_path: str, data_dir: str = "data") -> dict:
@@ -335,6 +394,7 @@ class ResumeShortlister:
         self.candidates[cid] = {"source_file": path.name, "text": "\n".join(t for _, t in pages)}
         self._add_experience()
         self._add_names()
+        self._add_sections()
         self._candidates_file.write_text(json.dumps(self.candidates, ensure_ascii=False), encoding="utf-8")
         c = self.candidates[cid]
         return {"status": "added", "candidate_id": cid, "name": c["name"],

@@ -78,12 +78,27 @@ def _from_filename(file_name: str) -> Optional[str]:
     return " ".join(parts) if len(parts) >= 2 and "".join(parts) == stem[3:].replace("_", "").replace("-", "") else None
 
 
+# "B R Y A N N A  C H R I S T O P H E R": letters separated by spaces, words by 2+ spaces (design templates)
+_SPACED = re.compile(r"^(?:[^\W\d_] ){2,}[^\W\d_](?:\s{2,}(?:[^\W\d_] ){1,}[^\W\d_])*$")
+
+
+def _spaced_name(text: str) -> Optional[str]:
+    """A letter-spaced name anywhere near the top (Word text boxes can put it late in the text)."""
+    for raw in text.splitlines()[:80]:
+        raw = raw.strip()
+        if _SPACED.match(raw):
+            joined = " ".join("".join(g.split()) for g in re.split(r"\s{2,}", raw))
+            if _looks_like_name(joined):
+                return joined
+    return None
+
+
 def extract_name(text: str, file_name: str = "") -> dict:
     """Return {"name": str | None, "source": "resume" | "filename" | None, "placeholder": bool}."""
     lines = [_clean(l) for l in text.splitlines() if l.strip()][:8]
-    name: Optional[str] = None
+    name: Optional[str] = _spaced_name(text)           # a letter-spaced name is a very strong signal
 
-    for line in lines[:6]:
+    for line in ([] if name else lines[:6]):
         if _looks_like_name(line):
             name = line
             break

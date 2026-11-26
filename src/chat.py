@@ -56,7 +56,10 @@ Rules:
 - must_have: skills, tools or qualifications that are required (the user says must, needs, with, required).
   nice_to_have: preferred or bonus skills. Use short lowercase keywords, one per item (e.g. "aws",
   "terraform", "python"). Join alternative spellings with "|" (e.g. "kubernetes|k8s").
-  Never put the job title in these lists.
+  Never put the job title in these lists, EXCEPT when the user asks for an exact or specific match of a title
+  or role (e.g. "exact match", "who is an administrative assistant", "has the title X") and gives no other skills:
+  then put the title phrase itself in must_have (e.g. "administrative assistant") so resumes that really
+  contain that phrase rank first.
 - Experience requirements go ONLY in min_years / max_years, never in the keyword lists or in "query".
   "4 to 5 years" -> min_years 4, max_years 5; "at least 3 years" or "3+ years" -> min_years 3 only;
   "junior" or "up to 2 years" -> max_years 2 only; no requirement -> null.
@@ -252,6 +255,9 @@ class ChatShortlister:
             some = total - full
             return (f"{total} {found} at least one skill: {full} {'meets' if full == 1 else 'meet'} all "
                     f"{len(self.spec.must_have)} must-haves, {some} {'meets' if some == 1 else 'meet'} only some.")
+        if not self.spec.nice_to_have:
+            return (f"{total} resumes ranked by how close they are to the role description "
+                    f"(no skill keywords were given, so keyword scores are 0).")
         return f"{total} {found} at least one of the skills."
 
     @staticmethod

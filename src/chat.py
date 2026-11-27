@@ -8,6 +8,7 @@ Each message goes through two steps:
      ("why is #2 above #3?") are answered by Gemini from the stored scores and resume text only.
 """
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
@@ -220,15 +221,35 @@ def spec_from_json(data: dict, fallback: "SearchSpec") -> "SearchSpec":
     )
 
 
+DEFAULT_MODEL = "gemini-3-flash-preview"
+
+
+def is_rate_limit(error: Exception) -> bool:
+    """True for Gemini quota errors (HTTP 429 / RESOURCE_EXHAUSTED)."""
+    text = f"{type(error).__name__} {error}"
+    return "RESOURCE_EXHAUSTED" in text or "RateLimit" in text or " 429" in text
+
+
+def llm_error_text(error: Exception) -> str:
+    if is_rate_limit(error):
+        return ("Gemini's request quota is used up (the free tier allows only a few requests per day on some models, "
+                "and resets at midnight Pacific time). Wait a while, or put GEMINI_MODEL=<a Flash-Lite model id> "
+                "in the .env file and restart: Flash-Lite models have a much larger free daily quota.")
+    return f"the language model call failed ({type(error).__name__}: {error})"
+
+
 class ChatShortlister:
-    def __init__(self, shortlister, llm=None, llm_model: str = "gemini-3-flash-preview", narrate: bool = True):
+    def __init__(self, shortlister, llm=None, llm_model: Optional[str] = None, narrate: Optional[bool] = None):
         self.shortlister = shortlister
+        if narrate is None:              # NARRATE=0 in .env turns the written answers off (saves one Gemini call per search)
+            narrate = os.environ.get("NARRATE", "1").strip().lower() not in ("0", "false", "no", "off")
         self.narrate = narrate           # True: Gemini writes the search reply in sentences; False: plain ranked list
         self.last_table = ""             # the plain ranked list of the latest search (always available)
         if llm is None:
             from dotenv import load_dotenv
             from langchain_google_genai import ChatGoogleGenerativeAI
             load_dotenv()
+            llm_model = llm_model or os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
             llm = ChatGoogleGenerativeAI(model=llm_model, temperature=0)
         self.llm = llm
         self.spec = SearchSpec()
@@ -254,6 +275,8 @@ class ChatShortlister:
         try:
             data = self._interpret(message)
         except Exception as e:
+            if is_rate_limit(e):
+                return "Sorry, " + llm_error_text(e)
             return f"Sorry, I couldn't understand that request ({type(e).__name__}: {e}). Please rephrase."
 
         intent = data.get("intent")
@@ -333,7 +356,10 @@ class ChatShortlister:
                   .replace("<<MESSAGE>>", message))
         try:
             text = self._llm_text(prompt).strip()
-        except Exception:
+        except Exception as e:
+            if is_rate_limit(e):
+                self.narrate = False                       # stop spending requests on sentences this session
+                return "(Gemini's quota is used up, so this is the plain ranked list.)\n\n" + table
             return table                                   # LLM unavailable: still show the ranked list
         if not text:
             return table
@@ -450,4 +476,4 @@ class ChatShortlister:
         try:
             return self._llm_text(prompt).strip()
         except Exception as e:
-            return f"Sorry, the language model call failed ({type(e).__name__}: {e})."
+            return "Sorry, " + llm_error_text(e) + "."
